@@ -1,0 +1,18 @@
+[package]
+name = "ezradio_capture_parser"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "4.5.4", features = ["derive"] }
+itertools = "0.13.0"
+reqwest = { version = "0.12.4", features = ["json"] }
+indicatif = "0.17"
+zip = "2.1.2"
+tempfile = "3"
+tokio = { version = "1.38.0" }
+scraper = "0.19.0"
+bitvec = "1"
+tabled = "0.15.0"
