@@ -1,8 +1,8 @@
+use std::cmp::PartialEq;
 use std::collections::HashMap;
+use std::fmt::Formatter;
 use std::io::Read;
 use std::{fmt, fs};
-use std::cmp::PartialEq;
-use std::fmt::Formatter;
 
 use bitvec::order::Msb0;
 use bitvec::vec::BitVec;
@@ -181,35 +181,40 @@ fn parse_register_table(e: ElementRef) -> RegisterTable {
 
     let prev_len = registers.len();
 
-    let init = registers.first().cloned().map(|f| vec![f]).unwrap_or_default();
-    let registers = registers
-        .into_iter()
-        .tuple_windows::<(_,_)>()
-        .fold(init, |mut acc, (prev, next)| {
-            if let (Some(caps_prev), Some(caps_next)) =
-                (re.captures(&prev.name), re.captures(&next.name))
-            {
-                let (base_prev, index_prev) = (
-                    caps_prev.get(1).unwrap().as_str(),
-                    caps_prev.get(2).unwrap().as_str().parse::<usize>().unwrap(),
-                );
-                let (base_next, index_next) = (
-                    caps_next.get(1).unwrap().as_str(),
-                    caps_next.get(2).unwrap().as_str().parse::<usize>().unwrap(),
-                );
+    let init = registers
+        .first()
+        .cloned()
+        .map(|f| vec![f])
+        .unwrap_or_default();
+    let registers =
+        registers
+            .into_iter()
+            .tuple_windows::<(_, _)>()
+            .fold(init, |mut acc, (prev, next)| {
+                if let (Some(caps_prev), Some(caps_next)) =
+                    (re.captures(&prev.name), re.captures(&next.name))
+                {
+                    let (base_prev, index_prev) = (
+                        caps_prev.get(1).unwrap().as_str(),
+                        caps_prev.get(2).unwrap().as_str().parse::<usize>().unwrap(),
+                    );
+                    let (base_next, index_next) = (
+                        caps_next.get(1).unwrap().as_str(),
+                        caps_next.get(2).unwrap().as_str().parse::<usize>().unwrap(),
+                    );
 
-                // Check if the bases are the same and there is a gap in the indexes
-                if base_prev == base_next && index_next > index_prev + 1 {
-                    acc.extend((index_prev + 1..index_next).map(|i| {
-                        let mut reg = prev.clone();
-                        reg.name = format!("{}[{}]", base_prev, i);
-                        return reg;
-                    }));
+                    // Check if the bases are the same and there is a gap in the indexes
+                    if base_prev == base_next && index_next > index_prev + 1 {
+                        acc.extend((index_prev + 1..index_next).map(|i| {
+                            let mut reg = prev.clone();
+                            reg.name = format!("{}[{}]", base_prev, i);
+                            return reg;
+                        }));
+                    }
                 }
-            }
-            acc.push(next);
-            acc
-        });
+                acc.push(next);
+                acc
+            });
 
     assert!(registers.len() >= prev_len);
 
@@ -233,7 +238,10 @@ impl fmt::Debug for Command {
             .field("summary", &self.summary)
             .field("register_table", &self.register_table)
             .field("reply_stream", &self.reply_stream)
-            .field("has_fast_response_semantics", &self.has_fast_response_semantics)
+            .field(
+                "has_fast_response_semantics",
+                &self.has_fast_response_semantics,
+            )
             .finish()
     }
 }
@@ -319,7 +327,7 @@ fn main() {
                 register_table: register_table.unwrap(),
                 reply_stream: reply_table,
                 has_fast_response_semantics: frr_semantics.unwrap_or(false),
-            }
+            },
         );
     }
 
@@ -416,7 +424,10 @@ fn main() {
                 let frr_semantics = if is_internal_cmd(command_code) {
                     false
                 } else {
-                    commands.get(&command_code).unwrap().has_fast_response_semantics
+                    commands
+                        .get(&command_code)
+                        .unwrap()
+                        .has_fast_response_semantics
                 };
 
                 if frr_semantics {
@@ -457,7 +468,10 @@ fn main() {
                     let frr_semantics = if is_internal_cmd(command_code) {
                         false
                     } else {
-                        commands.get(&command_code).unwrap().has_fast_response_semantics
+                        commands
+                            .get(&command_code)
+                            .unwrap()
+                            .has_fast_response_semantics
                     };
 
                     if frr_semantics {
@@ -608,6 +622,7 @@ fn main() {
                 table.modify(m.0, m.1).with(Alignment::center());
             }
 
+            // Draw the "Reply" table
             eprintln!("{}", table.with(Style::modern()));
         }
     }
