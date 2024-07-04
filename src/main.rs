@@ -156,6 +156,8 @@ fn parse_register_table(e: ElementRef) -> RegisterTable {
 
                     if let Some(constant) = constant {
                         argument.push(Field::Constant(constant == 1));
+                    } else if field_name == "X" {
+                        argument.push(Field::DontCare);
                     } else {
                         argument.push(Field::FixedWidth(FixedField {
                             name: field_name,
