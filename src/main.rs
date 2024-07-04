@@ -208,7 +208,7 @@ fn parse_register_table(e: ElementRef) -> RegisterTable {
                         acc.extend((index_prev + 1..index_next).map(|i| {
                             let mut reg = prev.clone();
                             reg.name = format!("{}[{}]", base_prev, i);
-                            return reg;
+                            reg
                         }));
                     }
                 }
