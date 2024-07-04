@@ -2,7 +2,7 @@ use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::fmt::Formatter;
 use std::io::Read;
-use std::{fmt, fs};
+use std::{fmt, fs, iter};
 
 use bitvec::order::Msb0;
 use bitvec::vec::BitVec;
@@ -94,10 +94,17 @@ impl Field {
 struct Register {
     name: String,
     fields: Vec<Field>,
+    is_variadic: bool,
 }
 
 #[derive(Debug)]
 struct RegisterTable(Vec<Register>);
+
+impl RegisterTable {
+    fn has_variadic_register(&self) -> bool {
+        self.0.last().map(|r| r.is_variadic).unwrap_or(false)
+    }
+}
 
 fn parse_register_table(e: ElementRef) -> RegisterTable {
     let mut registers = vec![];
@@ -173,11 +180,12 @@ fn parse_register_table(e: ElementRef) -> RegisterTable {
             registers.push(Register {
                 fields: argument,
                 name: name2.clone(),
+                is_variadic: false,
             });
         }
     }
 
-    let re = Regex::new(r"^(\w+)\[(\d+)]$").unwrap();
+    let re = Regex::new(r"^(\w+)\[(\d+|N)]$").unwrap();
 
     let prev_len = registers.len();
 
@@ -186,6 +194,11 @@ fn parse_register_table(e: ElementRef) -> RegisterTable {
         .cloned()
         .map(|f| vec![f])
         .unwrap_or_default();
+
+    // Massage the raw table scraped from the HTML into something useful. Specifically, expand
+    // register listings of the form: NAME[1]..NAME[11]  (where 11 is just an arbitrary number).
+    // Also, collapse listings of the form: NAME[1]..NAME[N]  (where N is literally the N character)
+    // into a single variadic register.
     let registers =
         registers
             .into_iter()
@@ -198,25 +211,66 @@ fn parse_register_table(e: ElementRef) -> RegisterTable {
                         caps_prev.get(1).unwrap().as_str(),
                         caps_prev.get(2).unwrap().as_str().parse::<usize>().unwrap(),
                     );
-                    let (base_next, index_next) = (
-                        caps_next.get(1).unwrap().as_str(),
-                        caps_next.get(2).unwrap().as_str().parse::<usize>().unwrap(),
-                    );
 
-                    // Check if the bases are the same and there is a gap in the indexes
-                    if base_prev == base_next && index_next > index_prev + 1 {
-                        acc.extend((index_prev + 1..index_next).map(|i| {
-                            let mut reg = prev.clone();
-                            reg.name = format!("{}[{}]", base_prev, i);
-                            reg
-                        }));
+                    let next_index = caps_next.get(2).unwrap().as_str();
+                    if next_index == "N" {
+                        // Handle e.g DATA[0]..DATA[N]
+                        assert!(
+                            prev.name.contains("[0]"),
+                            "didn't expect to see prev name: '{}'",
+                            prev.name
+                        );
+
+                        acc.push(Register {
+                            is_variadic: true,
+                            name: prev.name.replace("[0]", "[?]"),
+                            ..prev
+                        });
+                    } else {
+                        // Handle e.g. DATA[0]..DATA[11]
+                        let (base_next, index_next) = (
+                            caps_next.get(1).unwrap().as_str(),
+                            next_index.parse::<usize>().unwrap(),
+                        );
+
+                        // Check if the bases are the same and there is a gap in the indexes
+                        if base_prev == base_next && index_next > index_prev + 1 {
+                            acc.extend((index_prev + 1..index_next).map(|i| {
+                                let mut reg = prev.clone();
+                                reg.name = format!("{}[{}]", base_prev, i);
+                                reg
+                            }));
+                        }
+
+                        acc.push(next);
                     }
+                } else {
+                    acc.push(next);
                 }
-                acc.push(next);
+
                 acc
             });
 
+    // Make sure we didn't lose registers while expanding them
     assert!(registers.len() >= prev_len);
+
+    // Sanity check variadic register stuff
+    if cfg!(debug_assertions) {
+        let variadic_register_count = registers.iter().filter(|r| r.is_variadic).count();
+        assert!(
+            variadic_register_count <= 1,
+            "can't have more than one variadic register: {:#?}",
+            registers
+        );
+
+        if variadic_register_count == 1 {
+            assert!(
+                registers.last().unwrap().is_variadic,
+                "variadic register must be in last position: {:#?}",
+                registers
+            );
+        }
+    }
 
     RegisterTable(registers)
 }
@@ -362,14 +416,14 @@ fn main() {
         .collect::<Vec<_>>();
 
     // Don't trust the transaction number that Logic gave us, since replies to commands don't
-    // always happen within a transaction (and usually don't, because of CTS mechanism).
-
-    // let transactions = packets.into_iter().chunk_by(|p| p.number);
+    // always happen within a transaction (and usually don't, because of CTS mechanism). So code like
+    // this is not very useful:
     //
-    // let transactions = transactions
-    //     .into_iter()
-    //     .map(|t| t.1.collect::<Vec<_>>())
-    //     .collect::<Vec<_>>();
+    //  let transactions = packets.into_iter().chunk_by(|p| p.number);
+    //  let transactions = transactions
+    //      .into_iter()
+    //      .map(|t| t.1.collect::<Vec<_>>())
+    //      .collect::<Vec<_>>();
 
     struct Transaction<'a> {
         command: u8,
@@ -515,13 +569,13 @@ fn main() {
         let mut i = 3;
 
         let arg_stream = command.register_table.0.iter().skip(1);
-        for (packet, register) in transaction.arguments.iter().zip(arg_stream) {
+        for (j, (packet, register)) in transaction.arguments.iter().zip(arg_stream).enumerate() {
             let mut cell_i = 2;
 
             let mut v: BitVec<_, Msb0> = BitVec::from_element(packet.mosi_data);
             //eprintln!("0x{:02X} => {:?}", packet.mosi_data, v);
 
-            let mut record = vec![String::from("0x01"), register.name.clone()];
+            let mut record = vec![format!("0x{:02X}", j + 1), register.name.clone()];
 
             for field in &register.fields {
                 let remainder = v.split_off(field.width() as usize);
@@ -576,14 +630,42 @@ fn main() {
             let mut i = 2;
 
             // There is no requirement to actually read the reply from a command, so we need to
-            // use |zip| rather than |zip_longest| to account for this fact.
-            for (packet, register) in transaction.reply.iter().zip(reply_stream.0.iter().skip(1)) {
+            // use |zip| rather than |zip_longest| to account for this fact. But we also need to
+            // handle variadic registers (e.g. DATA[0]..DATA[N], where N is arbitrary).
+            let reply_args_iterator: Box<dyn Iterator<Item = _>>;
+            let has_variadic_register = reply_stream.has_variadic_register();
+            if has_variadic_register {
+                // Repeat the variadic register
+                let var_reg = reply_stream.0.last().unwrap();
+                reply_args_iterator =
+                    Box::new(reply_stream.0.iter().skip(1).chain(iter::repeat(var_reg)));
+            } else {
+                reply_args_iterator = Box::new(reply_stream.0.iter().skip(1));
+            }
+
+            let mut variadic_register_index = 0;
+            for (j, (packet, register)) in transaction
+                .reply
+                .iter()
+                .zip(reply_args_iterator)
+                .enumerate()
+            {
                 let mut cell_i = 2;
 
                 let mut v: BitVec<_, Msb0> = BitVec::from_element(packet.miso_data);
                 eprintln!("0x{:02X} => {:?}", packet.miso_data, v);
 
-                let mut record = vec![String::from("0x01"), register.name.clone()];
+                let register_name = if register.is_variadic {
+                    let index = variadic_register_index + j + 1;
+                    let ret = register.name.replace("[?]", &index.to_string());
+                    variadic_register_index += 1;
+                    ret
+                } else {
+                    register.name.clone()
+                };
+
+                // TODO: we use |j+1| but don't show CTS at index 0. Might be confusing for user.
+                let mut record = vec![format!("0x{:02X}", j + 1), register_name];
 
                 for field in &register.fields {
                     let remainder = v.split_off(field.width() as usize);
